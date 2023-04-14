@@ -25,6 +25,7 @@ struct zc_file {
   size_t offset;
   size_t prevOffset;
   void* memoryAddress;
+  int numOfPages;
 
   //   sem_t* pageLock;         // mutex to protect from any edits to page
   sem_t* pageReaderMutex;  // mutex to protect from any edits to page during read
@@ -66,7 +67,8 @@ zc_file* zc_open(const char* path) {
 
   int pageSize = sysconf(_SC_PAGE_SIZE);
 
-  int numberOfPages = ceil(fileSize / pageSize) + 2;
+  int numberOfPages = ceil(fileSize / pageSize);
+  zc->numOfPages = numberOfPages;
   // init mutexes
 
   // zc->pageReaderMutex = malloc(numberOfPages * sizeof(sem_t*));
@@ -95,18 +97,18 @@ int zc_close(zc_file* file) {
 
   // destroy mutexes  
 
-  fprintf(stderr, "destroying mutexes \n");
 
-  int arr_size = sizeof(file->pageReaderMutex) / sizeof(&file->pageReaderMutex[0]);
-  for (int i = 0; i < arr_size; i++) {
+
+
+  for (int i = 0; i < file->numOfPages; i++) {
     // sem_destroy(&file->pageLock[i]);
     sem_destroy(&file->pageReaderMutex[i]);
     sem_destroy(&file->pageWriterMutex[i]);
   }
 
   // free(file->pageLock);
-  // free(file->pageReaderMutex);
-  // free(file->pageWriterMutex);
+  free(file->pageReaderMutex);
+  free(file->pageWriterMutex);
   // deallocate zc_file
 
   free(file);
