@@ -324,22 +324,20 @@ int zc_copyfile(const char* source, const char* dest) {
 
   zc_file* source_zc = zc_open(source);
   zc_file* dest_zc = zc_open(dest);
-
-  // free dest file content
-  free(dest_zc->numOfCurrentPageReaders);
-  free(dest_zc->pageReaderMutex);
-  free(dest_zc->pageWriterMutex);
-
   size_t size_of_source = source_zc->fileSize;
   // no need to truncate, since write_start will do it
   // ftruncate(dest_zc->fileDescriptor, size_of_source);
 
   const char* source_content = zc_read_start(source_zc, &size_of_source);
+  zc_read_end(source_zc);
   char* dest_content = zc_write_start(dest_zc, size_of_source);
   zc_write_end(dest_zc);
 
-  dest_zc = source_zc;
+  // dest_zc = source_zc;
+
   memcpy(dest_content, source_content, size_of_source);
+  zc_close(source_zc);
+  zc_close(dest_zc);
 
   return 0;
 }
