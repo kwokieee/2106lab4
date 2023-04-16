@@ -121,8 +121,8 @@ zc_file* zc_open(const char* path) {
   zc->numOfCurrentReaders = 0;
   sem_init(&zc->fileLock, 0, 1);
   sem_init(&zc->fileWriterMutex, 0, 1);
-  fprintf(stderr, "number of pages: %d\n", numberOfPages);
 
+  fprintf(stderr, "number of pages: %d", numberOfPages);
   for (int i = 0; i < numberOfPages; i++) {
     // sem_init(&zc->pageLock[i], 0, 1);
     zc->numOfCurrentPageReaders[i] = 0;
@@ -138,6 +138,14 @@ zc_file* zc_open(const char* path) {
 }
 
 int zc_close(zc_file* file) {
+  // while (file->readPageQueue.head != NULL) {
+  //   pop_queue(&file->readPageQueue);
+  // }
+
+  // while (file->writePageQueue.head != NULL) {
+  //   pop_queue(&file->writePageQueue);
+  // }
+
   int ans = munmap(file->memoryAddress, file->fileSize);
 
   // destroy mutexes
@@ -151,6 +159,7 @@ int zc_close(zc_file* file) {
   // free(file->pageLock);
   free(file->pageReaderMutex);
   free(file->pageWriterMutex);
+  free(file->numOfCurrentPageReaders);
   // deallocate zc_file
 
   free(file);
@@ -161,29 +170,12 @@ int zc_close(zc_file* file) {
 const char* zc_read_start(zc_file* file, size_t* size) {
   // copy necessary information and pass the lock to the next reader
   sem_wait(&file->fileLock);
-  int pageSize = sysconf(_SC_PAGE_SIZE);
-  int currPageIndex = (int)ceil((double)file->offset / pageSize);
-
-  fprintf(stderr, "offset %ld\n", file->offset);
-  fprintf(stderr, "file size %ld\n", file->fileSize);
-  // if (file->offset >= file->fileSize) {
-  //   return NULL;
-  // }
-
-  fprintf(stderr, "locking %d in start \n", currPageIndex);
-
-  // sem_wait(&file->pageReaderMutex[currPageIndex]);
-
-  fprintf(stderr, "size %ld\n", *size);
   // if is first reader, lock write
   if (file->numOfCurrentReaders == 0) {
-    fprintf(stderr, "wait for writer\n");
     sem_wait(&file->fileWriterMutex);
   }
 
   file->numOfCurrentReaders++;
-
-  fprintf(stderr, "unlocking %d in start\n", currPageIndex);
   // sem_post(&file->pageReaderMutex[currPageIndex]);
 
   size_t fileSizeLeftToRead = file->fileSize - file->offset;
@@ -194,9 +186,6 @@ const char* zc_read_start(zc_file* file, size_t* size) {
 
   file->prevOffset = file->offset;
   file->offset += *size;
-
-  fprintf(stderr, "hello 5 world\n");
-  fprintf(stderr, "size %ld\n", *size);
 
   char* ans = (char*)(file->memoryAddress + file->prevOffset);
 
@@ -210,12 +199,12 @@ const char* zc_read_start(zc_file* file, size_t* size) {
 void zc_read_end(zc_file* file) {
   // To implement
   if (file->isBonus) {
+    fprintf(stderr, "bonus read end\n");
     int currPageIndex = pop_queue(&file->readPageQueue);
-
+    fprintf(stderr, "currPageIndex: %d\n", currPageIndex);
     sem_wait(&file->pageReaderMutex[currPageIndex]);
 
     if (file->numOfCurrentPageReaders[currPageIndex] == 1) {
-      fprintf(stderr, "unlock writer\n");
       sem_post(&file->pageWriterMutex[currPageIndex]);
     }
 
@@ -227,20 +216,11 @@ void zc_read_end(zc_file* file) {
   }
 
   sem_wait(&file->fileLock);
-  // int pageSize = sysconf(_SC_PAGE_SIZE);
-  // int currPageIndex = (int)ceil((double)file->prevOffset / pageSize);
-
-  // fprintf(stderr, "locking %d in end\n", currPageIndex);
-  // sem_wait(&file->pageReaderMutex[currPageIndex]);
 
   // if is last reader, unlock write
   if (file->numOfCurrentReaders == 1) {
-    fprintf(stderr, "unlock writer\n");
-    // sem_post(&file->pageWriterMutex[currPageIndex]);
     sem_post(&file->fileWriterMutex);
   }
-
-  // fprintf(stderr, "unlocking %d in end\n", currPageIndex);
 
   file->numOfCurrentReaders--;
   // sem_post(&file->pageReaderMutex[currPageIndex]);
@@ -250,15 +230,7 @@ void zc_read_end(zc_file* file) {
 char* zc_write_start(zc_file* file, size_t size) {
   sem_wait(&file->fileWriterMutex);
   sem_wait(&file->fileLock);
-
-  fprintf(stderr, "hello 1 world\n");
-  int pageSize = sysconf(_SC_PAGE_SIZE);
-  int currPageIndex = (int)ceil((double)file->offset / pageSize);
-
-  // if size + current offset > file size, increase file size
-
   if (file->offset + size > file->fileSize) {
-    fprintf(stderr, "resizing file\n");
     // lock the file as we need to resize the file and init more semaphores
     // double confimation that the file size is not enough
 
@@ -271,10 +243,6 @@ char* zc_write_start(zc_file* file, size_t size) {
 
     file->fileSize = newFileSize;
   }
-
-  fprintf(stderr, "locking reader %d in write start\n", currPageIndex);
-  // sem_wait(&file->pageReaderMutex[currPageIndex]);
-  fprintf(stderr, "locking writer %d in write start\n", currPageIndex);
 
   file->prevOffset = file->offset;
   file->offset += size;
@@ -289,6 +257,7 @@ char* zc_write_start(zc_file* file, size_t size) {
 void zc_write_end(zc_file* file) {
   // To implement
   if (file->isBonus) {
+    fprintf(stderr, "bonus write end");
     sem_wait(&file->writePageQueueMutex);
     int currPageIndex = pop_queue(&file->writePageQueue);
     sem_post(&file->writePageQueueMutex);
@@ -315,23 +284,16 @@ void zc_write_end(zc_file* file) {
 off_t zc_lseek(zc_file* file, long offset, int whence) {
   // To implement
   sem_wait(&file->fileLock);
-  fprintf(stderr, "oi\n");
   int ans = -1;
-
   int pageSize = sysconf(_SC_PAGE_SIZE);
   int currPageIndex = (int)ceil((double)file->offset / pageSize);
-
-  fprintf(stderr, "locking %d in lseek\n", currPageIndex);
 
   sem_wait(&file->pageReaderMutex[currPageIndex]);
   sem_wait(&file->pageWriterMutex[currPageIndex]);
 
   switch (whence) {
     case SEEK_SET:
-      fprintf(stderr, "SEEK_SET\n");
       ans = file->offset = offset;
-      fprintf(stderr, "SEEK_SET\n");
-
       break;
     case SEEK_CUR:
       ans = file->offset += offset;
@@ -363,6 +325,11 @@ int zc_copyfile(const char* source, const char* dest) {
   zc_file* source_zc = zc_open(source);
   zc_file* dest_zc = zc_open(dest);
 
+  // free dest file content
+  free(dest_zc->numOfCurrentPageReaders);
+  free(dest_zc->pageReaderMutex);
+  free(dest_zc->pageWriterMutex);
+
   size_t size_of_source = source_zc->fileSize;
   // no need to truncate, since write_start will do it
   // ftruncate(dest_zc->fileDescriptor, size_of_source);
@@ -393,11 +360,13 @@ const char* zc_read_offset(zc_file* file, size_t* size, long offset) {
   sem_t* writerMutex = &file->pageWriterMutex[currPageIndex];
   char* ans = (char*)(file->memoryAddress + offset);
   size_t fileSizeLeftToRead = file->fileSize - file->offset;
+  push_queue(&file->readPageQueue, currPageIndex);
   sem_post(&file->fileLock);
   // lock reader to update the number of readers
   sem_wait(readerMutex);
   // if is first reader, lock write
   if (file->numOfCurrentPageReaders[currPageIndex] == 0) {
+    fprintf(stderr, "first reader %ld", currPageIndex);
     sem_wait(writerMutex);
   }
 
@@ -414,13 +383,15 @@ const char* zc_read_offset(zc_file* file, size_t* size, long offset) {
 char* zc_write_offset(zc_file* file, size_t size, long offset) {
   file->isBonus = 1;
 
+  sem_wait(&file->fileLock);
   int pageSize = sysconf(_SC_PAGE_SIZE);
   int currPageIndex = (int)ceil((double)offset / pageSize);
-
+  sem_post(&file->fileLock);
   sem_wait(&file->pageWriterMutex[currPageIndex]);
   // lock whole file (among writers) for a possible update to the number of pages
   sem_wait(&file->fileLock);
   if (file->offset + size > file->fileSize) {
+    fprintf(stderr, "resize file");
     size_t newFileSize = file->offset + size;
     ftruncate(file->fileDescriptor, newFileSize);
 
@@ -429,16 +400,19 @@ char* zc_write_offset(zc_file* file, size_t size, long offset) {
     // copy old page locks to new page locks
     sem_t* newPageReaderMutex = malloc(newPageNum * sizeof(sem_t));
     sem_t* newPageWriterMutex = malloc(newPageNum * sizeof(sem_t));
+    int* newNumOfCurrentPageReaders = malloc(newPageNum * sizeof(int));
 
     for (int i = 0; i < file->numOfPages; i++) {
       newPageReaderMutex[i] = file->pageReaderMutex[i];
       newPageWriterMutex[i] = file->pageWriterMutex[i];
+      newNumOfCurrentPageReaders[i] = file->numOfCurrentPageReaders[i];
     }
 
     // init new page locks
 
     for (int i = file->numOfPages; i < newPageNum; i++) {
       // sem_init(&zc->pageLock[i], 0, 1);
+      newNumOfCurrentPageReaders[i] = 0;
       sem_init(&newPageReaderMutex[i], 0, 1);
       sem_init(&newPageWriterMutex[i], 0, 1);
     }
@@ -447,6 +421,7 @@ char* zc_write_offset(zc_file* file, size_t size, long offset) {
 
     free(file->pageReaderMutex);
     free(file->pageWriterMutex);
+    free(file->numOfCurrentPageReaders);
 
     // update zc_file
 
@@ -462,6 +437,8 @@ char* zc_write_offset(zc_file* file, size_t size, long offset) {
   }
 
   char* ans = (char*)(file->memoryAddress + offset);
+
+  push_queue(&file->writePageQueue, currPageIndex);
 
   sem_post(&file->fileLock);
 
