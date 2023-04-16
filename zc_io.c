@@ -107,6 +107,8 @@ zc_file* zc_open(const char* path) {
   zc->offset = 0;
   zc->memoryAddress = memoryAddress;
   zc->isBonus = 0;
+  zc->readPageQueue = (struct queue){NULL, NULL};
+  zc->writePageQueue = (struct queue){NULL, NULL};
 
   int pageSize = sysconf(_SC_PAGE_SIZE);
 
@@ -122,7 +124,6 @@ zc_file* zc_open(const char* path) {
   sem_init(&zc->fileLock, 0, 1);
   sem_init(&zc->fileWriterMutex, 0, 1);
 
-  fprintf(stderr, "number of pages: %d", numberOfPages);
   for (int i = 0; i < numberOfPages; i++) {
     // sem_init(&zc->pageLock[i], 0, 1);
     zc->numOfCurrentPageReaders[i] = 0;
@@ -199,9 +200,7 @@ const char* zc_read_start(zc_file* file, size_t* size) {
 void zc_read_end(zc_file* file) {
   // To implement
   if (file->isBonus) {
-    fprintf(stderr, "bonus read end\n");
     int currPageIndex = pop_queue(&file->readPageQueue);
-    fprintf(stderr, "currPageIndex: %d\n", currPageIndex);
     sem_wait(&file->pageReaderMutex[currPageIndex]);
 
     if (file->numOfCurrentPageReaders[currPageIndex] == 1) {
@@ -257,7 +256,6 @@ char* zc_write_start(zc_file* file, size_t size) {
 void zc_write_end(zc_file* file) {
   // To implement
   if (file->isBonus) {
-    fprintf(stderr, "bonus write end");
     sem_wait(&file->writePageQueueMutex);
     int currPageIndex = pop_queue(&file->writePageQueue);
     sem_post(&file->writePageQueueMutex);
@@ -364,7 +362,6 @@ const char* zc_read_offset(zc_file* file, size_t* size, long offset) {
   sem_wait(readerMutex);
   // if is first reader, lock write
   if (file->numOfCurrentPageReaders[currPageIndex] == 0) {
-    fprintf(stderr, "first reader %ld", currPageIndex);
     sem_wait(writerMutex);
   }
 
@@ -389,7 +386,6 @@ char* zc_write_offset(zc_file* file, size_t size, long offset) {
   // lock whole file (among writers) for a possible update to the number of pages
   sem_wait(&file->fileLock);
   if (file->offset + size > file->fileSize) {
-    fprintf(stderr, "resize file");
     size_t newFileSize = file->offset + size;
     ftruncate(file->fileDescriptor, newFileSize);
 
