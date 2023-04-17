@@ -24,6 +24,7 @@ typedef struct queue queue;
 
 struct linked_list_queue {
   int pageIndex;
+  int numPages;
   struct linked_list_queue* next;
 };
 
@@ -62,9 +63,10 @@ struct zc_file {
  * Exercise 1 *
  **************/
 
-void push_queue(struct queue* q, int pageIndex) {
+void push_queue(struct queue* q, int pageIndex, int numPages) {
   struct linked_list_queue* new_node = malloc(sizeof(struct linked_list_queue));
   new_node->pageIndex = pageIndex;
+  new_node->numPages = numPages;
   new_node->next = NULL;
 
   if (q->head == NULL) {
@@ -76,16 +78,20 @@ void push_queue(struct queue* q, int pageIndex) {
   }
 }
 
-int pop_queue(struct queue* q) {
+void pop_queue(struct queue* q, int* pageIndexResult, int* numPagesResult) {
   if (q->head == NULL) {
-    return -1;
+    // result = NULL;
+    pageIndexResult = NULL;
+    numPagesResult = NULL;
   }
 
   struct linked_list_queue* temp = q->head;
   int pageIndex = temp->pageIndex;
+  int numPages = temp->numPages;
   q->head = q->head->next;
   free(temp);
-  return pageIndex;
+  *pageIndexResult = pageIndex;
+  *numPagesResult = numPages;
 }
 
 int buffer = 10;  // not sure why this works, lolololloolol, do I init less semaphores than needed?
@@ -98,7 +104,8 @@ zc_file* zc_open(const char* path) {
 
   fstat(fileDescriptor, &fileStatus);
 
-  size_t fileSize = fileStatus.st_size == 0 ? 4 : fileStatus.st_size;  // todo:: @byran figure what the ternary is for
+  // size_t fileSize = fileStatus.st_size == 0 ? 4 : fileStatus.st_size;  // todo:: @byran figure what the ternary is for
+  size_t fileSize = fileStatus.st_size;
 
   void* memoryAddress = mmap(NULL, fileSize, PROT_READ | PROT_WRITE, MAP_SHARED, fileDescriptor, 0);
 
@@ -200,16 +207,30 @@ const char* zc_read_start(zc_file* file, size_t* size) {
 void zc_read_end(zc_file* file) {
   // To implement
   if (file->isBonus) {
-    int currPageIndex = pop_queue(&file->readPageQueue);
-    sem_wait(&file->pageReaderMutex[currPageIndex]);
+    // int currPageIndex = pop_queue(&file->readPageQueue);
+    // sem_wait(&file->pageReaderMutex[currPageIndex]);
 
-    if (file->numOfCurrentPageReaders[currPageIndex] == 1) {
-      sem_post(&file->pageWriterMutex[currPageIndex]);
+    // if (file->numOfCurrentPageReaders[currPageIndex] == 1) {
+    //   sem_post(&file->pageWriterMutex[currPageIndex]);
+    // }
+
+    // file->numOfCurrentPageReaders[currPageIndex]--;
+
+    // sem_post(&file->pageReaderMutex[currPageIndex]);
+
+    int currPageIndex = 0;
+    int numPages = 1;
+
+    pop_queue(&file->readPageQueue, &currPageIndex, &numPages);
+    for (int i = 0; i < numPages; i++) {
+      sem_wait(&file->pageReaderMutex[currPageIndex]);
+      if (file->numOfCurrentPageReaders[currPageIndex] == 1) {
+        sem_post(&file->pageWriterMutex[currPageIndex]);
+      }
+      file->numOfCurrentPageReaders[currPageIndex]--;
+      currPageIndex++;
+      sem_post(&file->pageReaderMutex[currPageIndex]);
     }
-
-    file->numOfCurrentPageReaders[currPageIndex]--;
-
-    sem_post(&file->pageReaderMutex[currPageIndex]);
 
     return;
   }
@@ -236,7 +257,12 @@ char* zc_write_start(zc_file* file, size_t size) {
     size_t newFileSize = file->offset + size;
     ftruncate(file->fileDescriptor, newFileSize);
 
-    void* newMemoryAddress = mremap(file->memoryAddress, file->fileSize, newFileSize, MREMAP_MAYMOVE);
+    void* newMemoryAddress = NULL;
+    if (file->fileSize == 0) {
+      newMemoryAddress = mmap(NULL, newFileSize, PROT_READ | PROT_WRITE, MAP_SHARED, file->fileDescriptor, 0);
+    } else {
+      newMemoryAddress = mremap(file->memoryAddress, file->fileSize, newFileSize, MREMAP_MAYMOVE);
+    }
 
     file->memoryAddress = newMemoryAddress;
 
@@ -256,15 +282,26 @@ char* zc_write_start(zc_file* file, size_t size) {
 void zc_write_end(zc_file* file) {
   // To implement
   if (file->isBonus) {
+    // sem_wait(&file->writePageQueueMutex);
+    // int currPageIndex = pop_queue(&file->writePageQueue);
+    // sem_post(&file->writePageQueueMutex);
+
+    // // writes to the page at address
+    // msync(file->memoryAddress + currPageIndex * sysconf(_SC_PAGE_SIZE), sysconf(_SC_PAGE_SIZE), MS_SYNC);
+
+    // // unlock the page
+    // sem_post(&file->pageWriterMutex[currPageIndex]);
+
     sem_wait(&file->writePageQueueMutex);
-    int currPageIndex = pop_queue(&file->writePageQueue);
+    int currPageIndex = 0;
+    int numPages = 1;
+    pop_queue(&file->writePageQueue, &currPageIndex, &numPages);
     sem_post(&file->writePageQueueMutex);
-
-    // writes to the page at address
-    msync(file->memoryAddress + currPageIndex * sysconf(_SC_PAGE_SIZE), sysconf(_SC_PAGE_SIZE), MS_SYNC);
-
-    // unlock the page
-    sem_post(&file->pageWriterMutex[currPageIndex]);
+    for (int i = 0; i < numPages; i++) {
+      msync(file->memoryAddress + currPageIndex * sysconf(_SC_PAGE_SIZE), sysconf(_SC_PAGE_SIZE), MS_SYNC);
+      currPageIndex++;
+      sem_post(&file->pageWriterMutex[currPageIndex]);
+    }
 
     return;
   }
@@ -356,21 +393,41 @@ const char* zc_read_offset(zc_file* file, size_t* size, long offset) {
   sem_t* writerMutex = &file->pageWriterMutex[currPageIndex];
   char* ans = (char*)(file->memoryAddress + offset);
   size_t fileSizeLeftToRead = file->fileSize - file->offset;
-  push_queue(&file->readPageQueue, currPageIndex);
-  sem_post(&file->fileLock);
-  // lock reader to update the number of readers
-  sem_wait(readerMutex);
-  // if is first reader, lock write
-  if (file->numOfCurrentPageReaders[currPageIndex] == 0) {
-    sem_wait(writerMutex);
+
+  int numPages = 0;
+  if (fileSizeLeftToRead < *size) {
+    numPages = (int)ceil((double)fileSizeLeftToRead / pageSize);
+  } else {
+    numPages = (int)ceil((double)*size / pageSize);
   }
 
-  file->numOfCurrentPageReaders[currPageIndex]++;
+  push_queue(&file->readPageQueue, currPageIndex, numPages);
+  sem_post(&file->fileLock);
+  // // lock reader to update the number of readers
+  // sem_wait(readerMutex);
+  // // if is first reader, lock write
+  // if (file->numOfCurrentPageReaders[currPageIndex] == 0) {
+  //   sem_wait(writerMutex);
+  // }
+
+  // file->numOfCurrentPageReaders[currPageIndex]++;
+  // if (fileSizeLeftToRead < *size) {
+  //   *size = fileSizeLeftToRead;
+  // }
+
+  // sem_post(readerMutex);
   if (fileSizeLeftToRead < *size) {
     *size = fileSizeLeftToRead;
   }
-
-  sem_post(readerMutex);
+  for (int i = 0; i < numPages; i++) {
+    int currPage = currPageIndex + i;
+    sem_wait(&file->pageReaderMutex[currPage]);
+    if (file->numOfCurrentPageReaders[currPage] == 0) {
+      sem_wait(&file->pageWriterMutex[currPage]);
+    }
+    file->numOfCurrentPageReaders[currPage]++;
+    sem_post(&file->pageReaderMutex[currPage]);
+  }
 
   return ans;
 }
@@ -381,8 +438,12 @@ char* zc_write_offset(zc_file* file, size_t size, long offset) {
   sem_wait(&file->fileLock);
   int pageSize = sysconf(_SC_PAGE_SIZE);
   int currPageIndex = (int)ceil((double)offset / pageSize);
+
+  int numPages = 0;
+  numPages = (int)ceil((double)size / pageSize);
+
   sem_post(&file->fileLock);
-  sem_wait(&file->pageWriterMutex[currPageIndex]);
+  // sem_wait(&file->pageWriterMutex[currPageIndex]);
   // lock whole file (among writers) for a possible update to the number of pages
   sem_wait(&file->fileLock);
   if (file->offset + size > file->fileSize) {
@@ -424,15 +485,25 @@ char* zc_write_offset(zc_file* file, size_t size, long offset) {
 
     file->numOfPages = newPageNum;
 
-    void* newMemoryAddress = mremap(file->memoryAddress, file->fileSize, newFileSize, MREMAP_MAYMOVE);
+    void* newMemoryAddress = NULL;
+    if (file->fileSize == 0) {
+      newMemoryAddress = mmap(NULL, newFileSize, PROT_READ | PROT_WRITE, MAP_SHARED, file->fileDescriptor, 0);
+    } else {
+      newMemoryAddress = mremap(file->memoryAddress, file->fileSize, newFileSize, MREMAP_MAYMOVE);
+    }
 
     file->memoryAddress = newMemoryAddress;
     file->fileSize = newFileSize;
   }
 
+  for (int i = 0; i < numPages; i++) {
+    int currPage = currPageIndex + i;
+    sem_wait(&file->pageWriterMutex[currPage]);
+  }
+
   char* ans = (char*)(file->memoryAddress + offset);
 
-  push_queue(&file->writePageQueue, currPageIndex);
+  push_queue(&file->writePageQueue, currPageIndex, numPages);
 
   sem_post(&file->fileLock);
 
